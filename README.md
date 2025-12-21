@@ -51,7 +51,7 @@ This samples shows that `01.img` and `04.img` are copies of each other and `02.i
 
 ### Paraity analysis
 
-The parity analysis does a XOR calculation over all drives and the 
+The parity analysis does a XOR calculation over all drives and the same calculation for each constellation with one of the drives excluded. 
 
 ```
 ALL FILES                       0%
