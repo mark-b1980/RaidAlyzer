@@ -1,0 +1,82 @@
+# RaidAlyzer 
+
+Simple GUI tool to analyze RAID image-files to help with RAID data recovery and reverse-engineering of a RAID array.
+
+## Usage
+
+ 1. Click `Open disk images` and select the files to analyze (for now are only binary images supported)
+ 2. Click `Start analysis` - the results are updates periodically while the analysis is running
+ 3. Click `Stop analysis` to cancel the analysis before the process is complete
+
+### Patterns and entropy in data
+
+This function check if a sector is filled with `0x00` (Zero), a non-zero pattern (e.g. `0xAA` or `0xFF`) and if calculates the average entropy of all sectors. It checks furthermore of the bootsector signature `0x55AA` is found at the last 2 bytes of some sector and if the EFI partitiontable header `EFI PART` is found at the beginning of some sector.  
+
+**Sample output:**
+
+```
+ #  FILE                   ZERO %  PATTERN %  ENTROPY
+ 0  01.img                 18.2 %     19.7 %      7.5
+ 1  02.img                 18.1 %     19.6 %      7.5
+ 2  03.img                 18.2 %     19.7 %      7.5
+ 3  04.img                100.0 %      0.0 %      0.0
+
+---
+
+Bootsector signature found in file: 01.img at sector 0
+EFI PART header found in file:      01.img at sector 1
+```
+
+This samples shows that the image `04.img` is only filled with `0x00` bytes and thatfor this is likely a new drive or a drive that did not belong to the array. 
+
+The files `01.img` - `03.img` having the same average entropy and they have a similiar pattern in the data (similiar values for zero- and pattern-filled sectors). This indicate that the drives `01.img`, `02.img` and `03.img` belong to the same array while `04.img` is very likely not part of the array.
+
+The found bootsector-signature in sector `0` of the file `01.img` and the EFI partitiontable header in sector `1` of the same file are a strong indication that there is no offset in that RAID array and that `01.img` is the first disk in a right oriented array or the 2nd disk in a left-oriented array.
+
+### Mirror analysis
+
+The mirror analysis helps to identify identical copies of drives (mirrors) like in a RAID1 or RAID10.
+
+**Sample output:**
+
+```
+                      01.img                02.img                03.img                04.img  
+01.img                   ---                    0%                    0%                  100%  
+02.img                    0%                   ---                  100%                    0%  
+03.img                    0%                  100%                   ---                    0%  
+04.img                  100%                    0%                    0%                   ---  
+```
+
+This samples shows that `01.img` and `04.img` are copies of each other and `02.img` and `03.img` are also copies of each other. This mean we have here most-likely a RAID10.
+
+### Paraity analysis
+
+The parity analysis does a XOR calculation over all drives and the 
+
+```
+ALL FILES                       0%
+WITHOUT 01.img                  1%
+WITHOUT 02.img                  1%
+WITHOUT 03.img                  0%
+WITHOUT 04.img                100%
+```
+
+This show us without `04.img` we have a complete RAID5 with all drives. This is also the same sample as in [patterns and entropy in data](#patterns-and-entropy-in-data).
+
+```
+ALL FILES                     100%
+WITHOUT 01.img                  0%
+WITHOUT 02.img                  1%
+WITHOUT 03.img                  1%
+```
+
+This show us we have here most-likely a RAID5 with all 3 drives present. (Same sample as above but without `04.img`)
+
+```
+ALL FILES                       1%
+WITHOUT 02.img                  2%
+WITHOUT 03.img                  1%
+WITHOUT 04.img                  3%
+```
+
+This show us we have a RAID5 with at least one missing drive or maybe a RAID6 or RAID1, given there are no mirrors detected.
