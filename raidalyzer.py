@@ -9,6 +9,7 @@ class RaidAlyzerApp(tk.Tk):
         super().__init__()
         self.title("RaidAlyzer v1.1")
         self.geometry("800x600")
+        self.state('zoomed')
         
         self.files = []
         self.stats = []
@@ -16,6 +17,7 @@ class RaidAlyzerApp(tk.Tk):
         self.parity = []
 
         self.handles = []
+        self.max_sectors = 0
 
         self.offset = 0
         self.bs = 512
@@ -53,7 +55,6 @@ class RaidAlyzerApp(tk.Tk):
         label_frame = ttk.Frame(text_frame)
         label_frame.pack(fill=tk.X, padx=5)
         ttk.Label(label_frame, text="Patterns and entropy in data").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        ttk.Label(label_frame, text="Mirror analysis").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         ttk.Label(label_frame, text="Parity analysis").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
 
         mono_font = font.Font(family="Consolas", size=10)
@@ -61,11 +62,12 @@ class RaidAlyzerApp(tk.Tk):
         self.text1 = tk.Text(text_frame, wrap=tk.NONE, font=mono_font, width=30, height=15, state=tk.DISABLED)
         self.text1.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
 
-        self.text2 = tk.Text(text_frame, wrap=tk.NONE, font=mono_font, width=30, height=15, state=tk.DISABLED)
-        self.text2.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
-
         self.text3 = tk.Text(text_frame, wrap=tk.NONE, font=mono_font, width=30, height=15, state=tk.DISABLED)
         self.text3.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+
+        ttk.Label(main_frame, text="Mirror analysis").pack(fill=tk.X, expand=False, pady=10)
+        self.text2 = tk.Text(main_frame, wrap=tk.NONE, font=mono_font, width=30, height=15, state=tk.DISABLED)
+        self.text2.pack(fill=tk.BOTH, expand=True, pady=10)
 
         # Statusbar
         self.statusbar = ttk.Label(self, text="Ready", relief=tk.SUNKEN, anchor=tk.W)
@@ -91,6 +93,10 @@ class RaidAlyzerApp(tk.Tk):
         # Open all files and store handles
         for file in self.files:
             self.handles.append(open(file, 'rb'))
+            if self.max_sectors == 0:
+                self.max_sectors = os.path.getsize(file) // self.bs
+            else:
+                self.max_sectors = min(self.max_sectors, os.path.getsize(file) // self.bs)
 
         # Update status and buttons
         self.analysis_running = True
@@ -114,8 +120,8 @@ class RaidAlyzerApp(tk.Tk):
             self.read_next_data_block()
 
             # Update UI after each block
-            if self.offset % 100000 == 0:
-                self.statusbar.config(text=f"Processed {self.offset} sectors.")
+            if self.offset % 1000 == 0:
+                self.statusbar.config(text=f"Processed {self.offset} / {self.max_sectors} sectors: {self.offset * 100 / self.max_sectors:.1f}%")
                 self.update_output()
 
                 self.statusbar.update_idletasks()
