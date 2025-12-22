@@ -138,7 +138,7 @@ class RaidAlyzerApp(tk.Tk):
                 self.read_next_data_block()
 
             # Update UI after each block
-            self.statusbar.config(text=f"Processed {self.offset} / {self.max_sectors} sectors: {self.offset * 100 / self.max_sectors:.1f}% ({self.offset / (time.time() - self.start_time):.1f} sectosr/sec.)")
+            self.statusbar.config(text=f"Processed {self.offset} / {self.max_sectors} sectors: {self.offset * 100 / self.max_sectors:.1f}% ({self.offset / (time.time() - self.start_time):.1f} sectors/sec.)")
             self.update_output()
 
             # Schedule next step
