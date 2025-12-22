@@ -1,2 +1,16 @@
-# Ignore sample image files
 **/*.img
+**/*.exe
+**/*.txt
+**/*.log
+**/*.bin
+**/*.png
+
+# Ignore compiled Python files
+**/*.pyc
+**/*.pyo
+__pycache__/*
+
+# Ignore distribution/build folders
+raidalyzer.dist/*
+raidalyzer.build/*
+raidalyzer.onefile-build/*

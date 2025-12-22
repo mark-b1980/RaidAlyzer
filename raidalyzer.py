@@ -1,23 +1,31 @@
 import os
 import math
+import time
 import tkinter as tk
 
+from datetime import datetime
 from tkinter import ttk, filedialog, font
 
 class RaidAlyzerApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("RaidAlyzer v1.1")
+        self.VERSION = "2.4"
+        self.title(f"RaidAlyzer v{self.VERSION}")
         self.geometry("800x600")
         self.state('zoomed')
         
         self.files = []
+        self.filenames = []
         self.stats = []
         self.mirrors = []
         self.parity = []
 
         self.handles = []
         self.max_sectors = 0
+        self.start_time = 0
+
+        self.last_parity_check_pattern = ""
+        self.parity_check_log = None
 
         self.offset = 0
         self.bs = 512
@@ -78,11 +86,13 @@ class RaidAlyzerApp(tk.Tk):
         files = filedialog.askopenfilenames(filetypes=[("Image Files", "*.img;*.dd;*.bin")])
         self.listbox.delete(0, tk.END)
         self.files.clear()
+        self.filenames.clear()
         self.handles.clear()
 
         for file in files:
             self.listbox.insert(tk.END, file)
             self.files.append(file)
+            self.filenames.append(os.path.basename(file))
 
         # Enable start button if files are selected
         if self.files:
@@ -100,9 +110,13 @@ class RaidAlyzerApp(tk.Tk):
 
         # Update status and buttons
         self.analysis_running = True
+        self.start_time = time.time()
 
         # Reset analysis variables
         self.offset = 0
+        self.last_parity_check_pattern = ""
+        self.parity_check_log = open("parity_check.log", "w")
+
         self.stats.clear()
         self.mirrors.clear()
         self.parity.clear()
@@ -117,42 +131,34 @@ class RaidAlyzerApp(tk.Tk):
 
     def analysis_step(self):
         if self.analysis_running:
-            self.read_next_data_block()
+            sectors_to_process = 10000
+            for _ in range(sectors_to_process):
+                if not self.analysis_running: 
+                    break
+                self.read_next_data_block()
 
             # Update UI after each block
-            if self.offset % 1000 == 0:
-                self.statusbar.config(text=f"Processed {self.offset} / {self.max_sectors} sectors: {self.offset * 100 / self.max_sectors:.1f}%")
-                self.update_output()
-
-                self.statusbar.update_idletasks()
-                self.text1.update_idletasks()
-                self.text2.update_idletasks()
-                self.text3.update_idletasks()
+            self.statusbar.config(text=f"Processed {self.offset} / {self.max_sectors} sectors: {self.offset * 100 / self.max_sectors:.1f}% ({self.offset / (time.time() - self.start_time):.1f} sectosr/sec.)")
+            self.update_output()
 
             # Schedule next step
             self.after(1, self.analysis_step)
 
         else:
             self.update_output()
-            self.statusbar.update_idletasks()
-            self.text1.update_idletasks()
-            self.text2.update_idletasks()
-            self.text3.update_idletasks()
 
 
     def read_next_data_block(self):
         # Read a block of data from each file
-        data_blocks = []
+        data_blocks = {}
         for i, handle in enumerate(self.handles):
             data = handle.read(self.bs)
 
-            if data[-2:] == b'\x55\xAA' and self.first_potential_bootsector_found_on == "":
-                file = os.path.basename(self.files[i])
-                self.first_potential_bootsector_found_on = f"Bootsector signature found in file: {file} at sector {self.offset}"
+            if self.first_potential_bootsector_found_on == "" and data[-2:] == b'\x55\xAA':
+                self.first_potential_bootsector_found_on = f"Bootsector signature found in file: {self.filenames[i]} at sector {self.offset}"
             
-            if data[:8].decode(errors='ignore') == "EFI PART" and self.first_potential_efi_part_found_on == "":
-                file = os.path.basename(self.files[i])
-                self.first_potential_efi_part_found_on = f"EFI PART header found in file:      {file} at sector {self.offset}"
+            if self.first_potential_efi_part_found_on == "" and data[:8].decode(errors='ignore') == "EFI PART":
+                self.first_potential_efi_part_found_on = f"EFI PART header found in file:      {self.filenames[i]} at sector {self.offset}"
 
             if not data:
                 self.analysis_running = False
@@ -161,7 +167,7 @@ class RaidAlyzerApp(tk.Tk):
                 self.update_output()
                 return
             
-            data_blocks.append(data)
+            data_blocks[self.filenames[i]] = data
 
         # Initialize statistics for first data block
         if self.offset == 0:
@@ -198,6 +204,7 @@ class RaidAlyzerApp(tk.Tk):
 
 
     def check_parity(self, data_blocks):
+        """
         parity_block = bytearray(data_blocks.pop(0)) # Remove first block for parity comparison
         xor_result = bytearray(b'\x00' * self.bs)    # Initialize empty bytearray for XOR result
 
@@ -205,15 +212,21 @@ class RaidAlyzerApp(tk.Tk):
             block = bytearray(block)
             for i in range(self.bs):
                 xor_result[i] ^= block[i]            # XOR each byte
+        """
+        parity_block = bytearray(data_blocks.pop(0))                  # Remove first block for parity comparison
+        parity_block = int.from_bytes(parity_block, byteorder='big')  # Convert to integer for XOR comparison
+        xor_result = 0                                                # Initialize empty XOR result
 
-        if xor_result == parity_block:               # Check if XOR result matches "parity" block
-            return 1
-        
-        return 0
+        for block in data_blocks:
+            block_int = int.from_bytes(block, byteorder='big')        # Convert block to integer
+            xor_result ^= block_int                                   # XOR each block
 
+        return int(parity_block == xor_result)                        # Return 1 if parity matches
+    
 
-    def process_data_blocks(self, data_blocks):
+    def process_data_blocks(self, data_block_dict):
         # Update statistics for each data block
+        data_blocks = list(data_block_dict.values())
         for i in range(len(data_blocks)):
             if data_blocks[i] == b'\x00' * self.bs:
                 self.stats[i]['zero_blocks'] += 1
@@ -221,7 +234,9 @@ class RaidAlyzerApp(tk.Tk):
             elif data_blocks[i] == bytes([data_blocks[i][0] for x in range(self.bs)]):
                 self.stats[i]['pattern_blocks'] += 1
 
-            self.stats[i]['entropy'] += self.calc_entropy(data_blocks[i])
+            # Calculate entropy only for non-zero, non-pattern blocks
+            else:
+                self.stats[i]['entropy'] += self.calc_entropy(data_blocks[i])
 
         # Update mirror status for each data block
         for i in range(len(data_blocks)):
@@ -230,27 +245,49 @@ class RaidAlyzerApp(tk.Tk):
                     self.mirrors[i][j] += 1
 
         # Update parity status for all data block
-        self.parity[0] += self.check_parity(data_blocks.copy())
+        res = self.check_parity(data_blocks.copy())
+        self.parity[0] += res
+
+        # Check for new pattern
+        one_combination_checked_out = False
+        if res == 1:
+            one_combination_checked_out = True
+            parity_check_pattern = " + ".join(data_block_dict.keys())
+            if self.last_parity_check_pattern != parity_check_pattern:
+                self.parity_check_log.write(f"{self.offset};{parity_check_pattern}\n")
+                self.last_parity_check_pattern = parity_check_pattern
 
         # Check parity for all combinations of blocks with one block missing
         for i in range(len(data_blocks)):
-            new_data_blocks = data_blocks.copy()
-            del(new_data_blocks[i]) # Remove one block for parity calculation
-            self.parity[i+1] += self.check_parity(new_data_blocks) # Update i+1 as 0 is full parity
+            new_data_blocks = data_block_dict.copy()
+            del(new_data_blocks[self.filenames[i]])                 # Remove one block for parity calculation
+            res = self.check_parity(list(new_data_blocks.values())) 
+            self.parity[i+1] += res                                 # Update i+1 as 0 is full parity
+            
+            if res == 1:
+                one_combination_checked_out = True
+                parity_check_pattern = " + ".join(new_data_blocks.keys())
+                if self.last_parity_check_pattern != parity_check_pattern:
+                    self.parity_check_log.write(f"{self.offset};{parity_check_pattern}\n")
+                    self.last_parity_check_pattern = parity_check_pattern
 
+        if not one_combination_checked_out:
+            parity_check_pattern = "NO_MATCH"
+            if self.last_parity_check_pattern != parity_check_pattern:
+                self.parity_check_log.write(f"{self.offset};{parity_check_pattern}\n")
+                self.last_parity_check_pattern = parity_check_pattern
 
     def update_output(self):
         # Update statistics textbox
         stats = " #  FILE                   ZERO %  PATTERN %  ENTROPY\n"
-        for file in self.files:
-            idx = self.files.index(file)
-            file = os.path.basename(file)
+        for idx in range(len(self.filenames)):
+            file = self.filenames[idx]
             zero_percent = (self.stats[idx]['zero_blocks'] / self.offset) * 100
             pattern_percent = (self.stats[idx]['pattern_blocks'] / self.offset) * 100
             entropy = self.stats[idx]['entropy'] / self.offset
             stats += f"{idx:>2}  {file[:20]:<20}  {zero_percent:>5.1f} %  {pattern_percent:>7.1f} %  {entropy:>7.1f}\n" 
 
-        stats += "\n---\n"
+        stats += "\n---\n\n"
 
         # Check for first potential bootsector and EFI PART findings
         if self.first_potential_bootsector_found_on != "":
@@ -266,13 +303,13 @@ class RaidAlyzerApp(tk.Tk):
 
         # Update mirrors textbox
         mirrors = " " * 22 # 20 spaces for index column + 2 spaces as padding
-        for file in self.files:
-            file = os.path.basename(file)[:20]
+        for file in self.filenames:
+            file = file[:20]
             mirrors += f"{file:>20}  "
         mirrors += "\n"
 
         for i in range(len(self.files)):
-            file = os.path.basename(self.files[i])[:20]
+            file = self.filenames[i][:20]
             mirrors += f"{file:>20}  "
             for j in range(len(self.files)):
                 if i == j:
@@ -289,9 +326,8 @@ class RaidAlyzerApp(tk.Tk):
         # Update parity textbox
         file = "ALL FILES"
         parity = f"{file:<28}  {self.parity[0]*100/self.offset:>3.0f}%\n"
-        for file in self.files:
-            i = self.files.index(file)
-            file = os.path.basename(file)[:20]
+        for i in range(len(self.filenames)):
+            file = self.filenames[i][:20]
             parity += f"WITHOUT {file:<20}  {self.parity[i+1]*100/self.offset:>3.0f}%\n"
 
         self.text3.config(state=tk.NORMAL)
@@ -299,19 +335,84 @@ class RaidAlyzerApp(tk.Tk):
         self.text3.insert(tk.END, parity)
         self.text3.config(state=tk.DISABLED)
 
+        # Update
+        self.statusbar.update_idletasks()
+        self.text1.update_idletasks()
+        self.text2.update_idletasks()
+        self.text3.update_idletasks()
+
 
     def stop_analysis(self):
+        self.update_output()
+
         # Close all file handles
+        self.parity_check_log.close()
         for handle in self.handles:
             handle.close()
 
+        self.parity_check_log = None
         self.handles.clear()
         
         # Stop analysis flag and activate start button
         self.analysis_running = False
         self.start_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
-        self.statusbar.config(text="Analysis stopped.")
+        self.statusbar.config(text="Writing report")
+        self.statusbar.update_idletasks()
+
+        report_file = f"raidalyzer_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+
+        with open(report_file, "w") as report:
+            report.write(f"RaidAlyzer v{self.VERSION} Report\n")
+            report.write("======================\n\n")
+            report.write(f"Analyzed files:\n")
+            report.write(f"---------------------\n")
+            for file in self.filenames:
+                report.write(f"- {file}\n")
+            report.write("\n\n")
+
+            report.write("Statistics:\n")
+            report.write(f"---------------------\n")
+            report.write(self.text1.get(1.0, tk.END))
+            report.write("\n\n")
+
+            report.write("Mirror Analysis:\n")
+            report.write(f"---------------------\n")
+            report.write(self.text2.get(1.0, tk.END))
+            report.write("\n\n")
+
+            report.write("Parity Analysis:\n")
+            report.write(f"---------------------\n")
+            report.write(self.text3.get(1.0, tk.END))
+            report.write("\n\n")
+
+            report.write("Parity Check Log:\n")
+            report.write(f"---------------------\n")
+
+            parity_check_log = []
+            with open("parity_check.log", "r") as logfile:
+                for line in logfile:
+                    parity_check_log.append(line.strip().split(";"))
+                    if len(parity_check_log) > 9999:
+                        break
+            
+            # Add another log line and adding the last sector of the read data
+            if len(parity_check_log) < 10000:
+                parity_check_log.append([str(self.offset), "..."])
+
+            # Write ranges to report
+            for i in range(len(parity_check_log) - 1):
+                from_sec = int(parity_check_log[i][0])
+                to_sec = int(parity_check_log[i+1][0]) - 1
+                # Ensure to_sec is not less than from_sec
+                if to_sec < from_sec:
+                    to_sec = from_sec
+                pattern = parity_check_log[i][1].strip()
+
+                report.write(f"{from_sec} - {to_sec} : {pattern}\n")
+
+        self.statusbar.config(text="Analysis complete. Report written to: raidalyzer_report.txt")
+        self.statusbar.update_idletasks()
 
 
 if __name__ == "__main__":

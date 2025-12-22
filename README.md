@@ -80,3 +80,30 @@ WITHOUT 04.img                  3%
 ```
 
 This show us we have a RAID5 with at least one missing drive or maybe a RAID6 or RAID1, given there are no mirrors detected.
+
+### Detection of partial complete arrays and cutting points
+
+Occational clients do not know that a restore take time and I had cases where I need to stitch 2 drives together into a complete array as the data where partially complete with one of the drive to s certain point and partially complete with another drive to a certain point...
+
+This would look in a ideal case like that:
+
+```
+ALL FILES                       0%
+WITHOUT 02.img                  0%
+WITHOUT 03.img                  0%
+WITHOUT 04.img                 40%
+WITHOUT 05.img                 60%
+```
+
+You can see that the the overall parity match is 0% (also close to 0% is fine) and 40% match without `04.img` and the other 60% match without `05.img`. That let us hope that by combining the 40% of `05.img` which seem to match with the 60% of `04.img` which seem to match will give us a complete array.
+
+Thise becomes even more crear wehn looking at the `reaidalyzer_report_YYYYMMDD_hhmmss.txt` file created by the tool:
+
+```
+Parity Check Log:
+---------------------
+1 - 1354 : 02.img + 03.img + 04.img
+1355 - 2245 : 02.img + 03.img + 05.img
+```
+
+We need to use for sector 1 - 1354 the date from `04.img` and fro sector 1355 - 2245 the data of `05.img`!
