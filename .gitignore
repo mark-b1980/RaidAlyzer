@@ -1,9 +1,12 @@
+# Sample images
 **/*.img
+**/*.bin
+
+# Output files
 **/*.exe
 **/*.txt
 **/*.log
-**/*.bin
-**/*.png
+**/*.html
 
 # Ignore compiled Python files
 **/*.pyc

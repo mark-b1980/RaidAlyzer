@@ -1,18 +1,26 @@
 import os
+import json
 import math
 import time
+
 import tkinter as tk
+import matplotlib.pyplot as plt
 
 from datetime import datetime
-from tkinter import ttk, filedialog, font
+from tkinter import ttk, filedialog, font, messagebox
 
 class RaidAlyzerApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.VERSION = "2.4"
+        self.VERSION = "3.0.8"
         self.title(f"RaidAlyzer v{self.VERSION}")
         self.geometry("800x600")
         self.state('zoomed')
+
+        # Set window icon if icon.ico exists
+        icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
+        if os.path.exists(icon_path):
+            self.iconbitmap(icon_path)
         
         self.files = []
         self.filenames = []
@@ -23,6 +31,9 @@ class RaidAlyzerApp(tk.Tk):
         self.handles = []
         self.max_sectors = 0
         self.start_time = 0
+        self.first_analysis_block = False
+        self.analysis_block_entropy = {}
+        self.run_only_one_block = False
 
         self.last_parity_check_pattern = ""
         self.parity_check_log = None
@@ -30,6 +41,8 @@ class RaidAlyzerApp(tk.Tk):
         self.offset = 0
         self.bs = 512
         self.analysis_running = False
+        self.analysis_block_size = 10000
+        self.analysis_start_sector = 0
 
         self.first_potential_bootsector_found_on = ""
         self.first_potential_efi_part_found_on = ""
@@ -54,6 +67,25 @@ class RaidAlyzerApp(tk.Tk):
 
         self.stop_btn = ttk.Button(btn_frame, text="Stop analysis", command=self.stop_analysis, state=tk.DISABLED)
         self.stop_btn.pack(side=tk.LEFT, padx=5)
+
+        # Offset label and entry
+        ttk.Label(btn_frame, text="Offset (sectors):").pack(side=tk.LEFT, padx=5)
+        self.offset_entry = ttk.Entry(btn_frame, width=10)
+
+        self.check_prev_btn = ttk.Button(btn_frame, text="<<", command=self.check_prev_block, state=tk.DISABLED)
+        self.check_prev_btn.pack(side=tk.LEFT, padx=5)
+
+        self.offset_entry.pack(side=tk.LEFT, padx=5)
+        self.offset_entry.insert(0, "0")
+
+        self.check_next_btn = ttk.Button(btn_frame, text=">>", command=self.check_next_block, state=tk.DISABLED)
+        self.check_next_btn.pack(side=tk.LEFT, padx=5)
+
+        self.check_entropy_btn = ttk.Button(btn_frame, text="Check entropy", command=self.check_entropy, state=tk.DISABLED)
+        self.check_entropy_btn.pack(side=tk.LEFT, padx=5)
+
+        self.find_data_btn = ttk.Button(btn_frame, text="Find data sectors", command=self.find_data_sectors, state=tk.DISABLED)
+        self.find_data_btn.pack(side=tk.LEFT, padx=5)
 
         # Textboxes frame
         text_frame = ttk.Frame(main_frame)
@@ -97,12 +129,47 @@ class RaidAlyzerApp(tk.Tk):
         # Enable start button if files are selected
         if self.files:
             self.start_btn.config(state=tk.NORMAL)
+            self.check_entropy_btn.config(state=tk.NORMAL)
+            self.find_data_btn.config(state=tk.NORMAL)
+            self.check_prev_btn.config(state=tk.NORMAL)
+            self.check_next_btn.config(state=tk.NORMAL)
 
 
-    def start_analysis(self):
+    def find_data_sectors(self):
+        # Cancel any running analysis
+        if self.analysis_running:
+            self.stop_analysis()
+
+        self.statusbar.config(text="Searching first sector with a entropy above 2.5 on the first disk image...")
+        self.statusbar.update_idletasks()
+
+        with open(self.files[0], 'rb') as f:
+            sector_index = 0
+            while True:
+                data = f.read(self.bs)
+                if not data:
+                    break
+                
+                entropy = self.calc_entropy(data)
+                
+                if entropy > 2.5:
+                    self.offset_entry.delete(0, tk.END)
+                    self.offset_entry.insert(0, str(sector_index))
+                    self.statusbar.config(text=f"Found sector #{sector_index} with entropy {entropy:.2f} at {self.files[0]}")
+                    self.find_data_btn.config(state=tk.NORMAL)
+                    return
+                
+                sector_index += 1
+
+
+    def start_analysis(self, offset=0, run_only_one_block=False):
         # Open all files and store handles
         for file in self.files:
-            self.handles.append(open(file, 'rb'))
+            f = open(file, 'rb')
+            f.seek(offset * self.bs)
+
+            self.handles.append(f)
+
             if self.max_sectors == 0:
                 self.max_sectors = os.path.getsize(file) // self.bs
             else:
@@ -114,6 +181,10 @@ class RaidAlyzerApp(tk.Tk):
 
         # Reset analysis variables
         self.offset = 0
+        self.analysis_start_sector = offset
+        self.run_only_one_block = run_only_one_block
+        self.first_analysis_block = True
+        self.analysis_block_entropy = [[] for x in range(len(self.files))]
         self.last_parity_check_pattern = ""
         self.parity_check_log = open("parity_check.log", "w")
 
@@ -129,17 +200,81 @@ class RaidAlyzerApp(tk.Tk):
         self.after(1, self.analysis_step)
 
 
+    def check_entropy(self):
+        # Cancel any running analysis
+        if self.analysis_running:
+            self.stop_analysis()
+
+        # Get offset from entry
+        try:
+            offset = int(self.offset_entry.get())
+        except ValueError:
+            messagebox.showerror("Invalid Offset", "Offset must be a number, running analysis from offset 0.")
+            offset = 0
+
+        # Run analysis for one block only
+        self.start_analysis(offset=offset, run_only_one_block=True)
+
+
+    def check_next_block(self):
+        try:
+            offset = int(self.offset_entry.get())
+        except ValueError:
+            messagebox.showerror("Invalid Offset", "Offset must be a number, running analysis from offset 0.")
+            offset = 0
+
+        offset += self.analysis_block_size
+        self.offset_entry.delete(0, tk.END)
+        self.offset_entry.insert(0, str(offset))
+        self.check_entropy()
+
+
+    def check_prev_block(self):
+        try:
+            offset = int(self.offset_entry.get())
+        except ValueError:
+            messagebox.showerror("Invalid Offset", "Offset must be a number, running analysis from offset 0.")
+            offset = 0
+
+        offset -= self.analysis_block_size
+        if offset < 0:
+            offset = 0
+        self.offset_entry.delete(0, tk.END)
+        self.offset_entry.insert(0, str(offset))
+        self.check_entropy()
+
+
     def analysis_step(self):
         if self.analysis_running:
-            sectors_to_process = 10000
-            for _ in range(sectors_to_process):
+            for _ in range(self.analysis_block_size):
                 if not self.analysis_running: 
                     break
                 self.read_next_data_block()
 
+            # Calculate average entropy for actual analysis block
+            if self.first_analysis_block:
+                block_avg = 0.0
+                for i in range(len(self.files)):
+                    block_avg += sum(self.analysis_block_entropy[i]) / len(self.analysis_block_entropy[i])
+                block_avg /= len(self.files)
+
+                # Stop if some block with higher entropy found
+                if block_avg > 25:
+                    self.first_analysis_block = False
+
+                # Reset entropy data for next block
+                elif not self.run_only_one_block:
+                    self.analysis_block_entropy = [[] for x in range(len(self.files))]
+
+            
             # Update UI after each block
             self.statusbar.config(text=f"Processed {self.offset} / {self.max_sectors} sectors: {self.offset * 100 / self.max_sectors:.1f}% ({self.offset / (time.time() - self.start_time):.1f} sectors/sec.)")
             self.update_output()
+
+            # If only one block run requested, stop analysis
+            if self.run_only_one_block:
+                self.stop_analysis()
+                return
 
             # Schedule next step
             self.after(1, self.analysis_step)
@@ -204,15 +339,6 @@ class RaidAlyzerApp(tk.Tk):
 
 
     def check_parity(self, data_blocks):
-        """
-        parity_block = bytearray(data_blocks.pop(0)) # Remove first block for parity comparison
-        xor_result = bytearray(b'\x00' * self.bs)    # Initialize empty bytearray for XOR result
-
-        for block in data_blocks:
-            block = bytearray(block)
-            for i in range(self.bs):
-                xor_result[i] ^= block[i]            # XOR each byte
-        """
         parity_block = bytearray(data_blocks.pop(0))                  # Remove first block for parity comparison
         parity_block = int.from_bytes(parity_block, byteorder='big')  # Convert to integer for XOR comparison
         xor_result = 0                                                # Initialize empty XOR result
@@ -227,7 +353,10 @@ class RaidAlyzerApp(tk.Tk):
     def process_data_blocks(self, data_block_dict):
         # Update statistics for each data block
         data_blocks = list(data_block_dict.values())
+
         for i in range(len(data_blocks)):
+            entropy = 0.0
+
             if data_blocks[i] == b'\x00' * self.bs:
                 self.stats[i]['zero_blocks'] += 1
             
@@ -236,7 +365,11 @@ class RaidAlyzerApp(tk.Tk):
 
             # Calculate entropy only for non-zero, non-pattern blocks
             else:
-                self.stats[i]['entropy'] += self.calc_entropy(data_blocks[i])
+                entropy = self.calc_entropy(data_blocks[i])
+                self.stats[i]['entropy'] += entropy
+
+            if self.first_analysis_block:
+                self.analysis_block_entropy[i].append(int(entropy*10 + 1))
 
         # Update mirror status for each data block
         for i in range(len(data_blocks)):
@@ -276,6 +409,7 @@ class RaidAlyzerApp(tk.Tk):
             if self.last_parity_check_pattern != parity_check_pattern:
                 self.parity_check_log.write(f"{self.offset};{parity_check_pattern}\n")
                 self.last_parity_check_pattern = parity_check_pattern
+
 
     def update_output(self):
         # Update statistics textbox
@@ -342,6 +476,97 @@ class RaidAlyzerApp(tk.Tk):
         self.text3.update_idletasks()
 
 
+    def create_entropy_graph(self, entropy_data):
+        entropy_data = {self.filenames[i]: entropy_data[i] for i in range(len(self.files))}
+        json_entropy_data = json.dumps(entropy_data)
+
+        return """
+        <style>
+            .disk-row {
+                background-color: #1e1e1e;
+                margin-bottom: 15px;
+                padding: 10px;
+                border-radius: 4px;
+            }
+            .disk-header {
+                font-family: 'Consolas', monospace;
+                color: #4bc0c0;
+                font-size: 12px;
+                margin-bottom: 5px;
+            }
+            /* This rule is what stops the "endless growth" */
+            .chart-wrapper {
+                height: 120px; 
+                position: relative;
+                width: 100%;
+            }
+        </style>
+
+        <div id="chartsContainer"></div>
+
+        <script>
+        const raidData = """ + json_entropy_data + """;
+        const container = document.getElementById('chartsContainer');
+
+        Object.entries(raidData).forEach(([filename, values]) => {
+            const row = document.createElement('div');
+            row.className = 'disk-row';
+            
+            const header = document.createElement('div');
+            header.className = 'disk-header';
+            header.innerHTML = `FILE: ${filename}`;
+            
+            const wrapper = document.createElement('div');
+            wrapper.className = 'chart-wrapper';
+
+            const canvas = document.createElement('canvas');
+            
+            // CORRECT HIERARCHY:
+            wrapper.appendChild(canvas); // Put canvas in wrapper
+            row.appendChild(header);      // Put header in row
+            row.appendChild(wrapper);     // Put wrapper in row
+            container.appendChild(row);   // Put row in main container
+
+            new Chart(canvas, {
+                type: 'line',
+                data: {
+                    labels: values.map((_, i) => i),
+                    datasets: [{
+                        label: 'Entropy',
+                        data: values,
+                        borderColor: '#ff6384',
+                        backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                        borderWidth: 1.5,
+                        fill: true,
+                        pointRadius: 1,
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false, // Allows the chart to respect the 120px height
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            ticks: { color: '#888', font: { size: 10 } },
+                            grid: { color: '#333' }
+                        },
+                        x: {
+                            ticks: { color: '#888', font: { size: 10 } },
+                            grid: { color: '#333' }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+        });
+        </script>
+        """
+        
+
     def stop_analysis(self):
         self.update_output()
 
@@ -360,44 +585,104 @@ class RaidAlyzerApp(tk.Tk):
         self.statusbar.config(text="Writing report")
         self.statusbar.update_idletasks()
 
-        report_file = f"raidalyzer_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        # Skip report generation for one-block analysis
+        if self.run_only_one_block:
+            self.statusbar.config(text="Analysis complete.")
+            self.statusbar.update_idletasks()
+
+            # Open graph in watplotlib
+            num_files = len(self.files)
+    
+            fig, axes = plt.subplots(nrows=num_files, ncols=1, figsize=(12, 2 * num_files), sharex=True)
+            fig.canvas.manager.set_window_title("Entropy graph")
+            if num_files == 1:
+                axes = [axes]
+
+            for i, (filename, values) in enumerate(zip(self.filenames, self.analysis_block_entropy)):
+                ax = axes[i]
+                ax.plot(values, label=filename, color=f'C{i}', linewidth=1.5)
+                
+                # Formatting each individual subplot
+                ax.set_title(f"FILE: {filename}", fontsize=10, loc='left', fontweight='bold')
+                ax.set_ylabel('Entropy (%)', fontsize=9)
+                ax.set_ylim(0, 105) # Slightly above 100 for visual padding
+                ax.grid(True, which='both', linestyle='--', alpha=0.5)
+
+            # Global X-axis label at the bottom
+            plt.xlabel('Sector Index / Block Offset', fontsize=10)
+            
+            # Adjust layout to prevent titles and labels from overlapping
+            plt.tight_layout()
+            plt.show()
+
+            return
+
+        # Write HTML report
+        report_file = f"raidalyzer_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
 
         with open(report_file, "w") as report:
-            report.write(f"RaidAlyzer v{self.VERSION} Report\n")
-            report.write("======================\n\n")
-            report.write(f"Analyzed files:\n")
-            report.write(f"---------------------\n")
+            h1 = f"RaidAlyzer v{self.VERSION} Report"
+            report.write("<!DOCTYPE html>\n")
+            report.write("<html lang=\"en\">\n")
+            report.write("<head>\n")
+            report.write(f"<title>{h1}</title>\n")
+
+            # Styles
+            report.write("<script src=\"https://cdn.jsdelivr.net/npm/chart.js\"></script>\n")
+            report.write("<style>\n")
+            report.write("body { font-family: monospace; background-color: #1e1e1e; color: #ffffff; padding: 20px; } \n")
+            report.write("h2 { color: #4bc0c0; } \n")
+            report.write(".chart-container { width: 90%; margin: auto; background-color: #2d2d2d; padding: 20px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); } \n")
+            report.write(".disk-row { background-color: #1e1e1e; margin-bottom: 15px; padding: 10px; border-radius: 4px; border-left: 4px solid #4bc0c0; } \n")
+            report.write(".disk-header { font-size: 0.9em; color: #4bc0c0; margin-bottom: 5px; display: flex; justify-content: space-between; } \n")
+            report.write(".chart-wrapper { height: 120px; position: relative; width: 100%; } \n")
+            report.write("</style>\n")
+            report.write("</head>\n")
+
+            # Body
+            report.write("<body>\n")
+            report.write(f"<h1>{h1}</h1>\n")
+            report.write("<hr><br><br>\n\n")
+            report.write(f"<h2>Analyzed files:</h2><hr><br>\n")
+            report.write("<ul>\n")
             for file in self.filenames:
-                report.write(f"- {file}\n")
-            report.write("\n\n")
+                report.write(f"<li>{file}</li>\n")
+            report.write("</ul><br><br>\n\n")
 
-            report.write("Statistics:\n")
-            report.write(f"---------------------\n")
+            report.write(f"<b>Start sector:</b> {self.analysis_start_sector}<br><br><hr><br>\n\n")
+
+            report.write("<h2>Statistics:</h2><hr><br>\n")
+            report.write("<pre>\n")
             report.write(self.text1.get(1.0, tk.END))
-            report.write("\n\n")
+            report.write("</pre><br><br>\n\n")
 
-            report.write("Mirror Analysis:\n")
-            report.write(f"---------------------\n")
+            report.write("<h2>Mirror Analysis:</h2><hr><br>\n")
+            report.write("<pre>\n")
             report.write(self.text2.get(1.0, tk.END))
-            report.write("\n\n")
+            report.write("</pre><br><br>\n\n")
 
-            report.write("Parity Analysis:\n")
-            report.write(f"---------------------\n")
+            report.write("<h2>Parity Analysis:</h2><hr><br>\n")
+            report.write("<pre>\n")
             report.write(self.text3.get(1.0, tk.END))
-            report.write("\n\n")
+            report.write("</pre><br><br>\n\n")
 
-            report.write("Parity Check Log:\n")
-            report.write(f"---------------------\n")
+            # create entropy graph from first analysis block
+            report.write("<h2>Entropy graph for first block potentially containing data:</h2><hr><br>\n")
+            report.write(self.create_entropy_graph(self.analysis_block_entropy))
+            report.write("<br><br>\n\n")
+
+            report.write("<h2>Parity Check Log:</h2><hr><br>\n")
+            report.write("<pre>\n")
 
             parity_check_log = []
             with open("parity_check.log", "r") as logfile:
                 for line in logfile:
                     parity_check_log.append(line.strip().split(";"))
-                    if len(parity_check_log) > 9999:
+                    if len(parity_check_log) > 999:
                         break
             
             # Add another log line and adding the last sector of the read data
-            if len(parity_check_log) < 10000:
+            if len(parity_check_log) < 1000:
                 parity_check_log.append([str(self.offset), "..."])
 
             # Write ranges to report
@@ -411,7 +696,9 @@ class RaidAlyzerApp(tk.Tk):
 
                 report.write(f"{from_sec} - {to_sec} : {pattern}\n")
 
-        self.statusbar.config(text="Analysis complete. Report written to: raidalyzer_report.txt")
+            report.write("</pre>\n")
+
+        self.statusbar.config(text=f"Analysis complete. Report written to: {report_file}")
         self.statusbar.update_idletasks()
 
 
