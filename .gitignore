@@ -4,7 +4,6 @@
 
 # Output files
 **/*.exe
-**/*.txt
 **/*.log
 **/*.html
 
@@ -14,6 +13,8 @@
 __pycache__/*
 
 # Ignore distribution/build folders
+venv/*
+build/*
 raidalyzer.dist/*
 raidalyzer.build/*
 raidalyzer.onefile-build/*

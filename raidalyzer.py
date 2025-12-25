@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import math
 import time
@@ -10,18 +11,30 @@ from datetime import datetime
 from tkinter import ttk, filedialog, font, messagebox
 
 class RaidAlyzerApp(tk.Tk):
+    VERSION = "3.0.8"
+
     def __init__(self):
         super().__init__()
-        self.VERSION = "3.0.8"
-        self.title(f"RaidAlyzer v{self.VERSION}")
+        self.title(f"RaidAlyzer v{RaidAlyzerApp.VERSION}")
         self.geometry("800x600")
         self.state('zoomed')
 
-        # Set window icon if icon.ico exists
-        icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
+        # Set window icon
+        if getattr(sys, 'frozen', False):
+            base_path = os.path.dirname(sys.executable)
+        else:
+            base_path = os.path.dirname(os.path.abspath(__file__))
+
+        icon_path = os.path.join(base_path, "icon.ico")
         if os.path.exists(icon_path):
             self.iconbitmap(icon_path)
         
+        # Base values for 
+        self.bs = 512                     # Check sector by sector 
+        self.analysis_block_size = 10000  # Analze a 10.000 blocks before updating output
+        self.analysis_start_sector = 0    # Start offset in sectors
+
+        # Shared runtime status data
         self.files = []
         self.filenames = []
         self.stats = []
@@ -35,14 +48,11 @@ class RaidAlyzerApp(tk.Tk):
         self.analysis_block_entropy = {}
         self.run_only_one_block = False
 
+        self.offset = 0
+
         self.last_parity_check_pattern = ""
         self.parity_check_log = None
-
-        self.offset = 0
-        self.bs = 512
         self.analysis_running = False
-        self.analysis_block_size = 10000
-        self.analysis_start_sector = 0
 
         self.first_potential_bootsector_found_on = ""
         self.first_potential_efi_part_found_on = ""
@@ -571,7 +581,10 @@ class RaidAlyzerApp(tk.Tk):
         self.update_output()
 
         # Close all file handles
-        self.parity_check_log.close()
+        if not self.parity_check_log is None:
+            self.parity_check_log.close()
+            self.parity_check_log = None
+
         for handle in self.handles:
             handle.close()
 
@@ -621,7 +634,7 @@ class RaidAlyzerApp(tk.Tk):
         report_file = f"raidalyzer_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
 
         with open(report_file, "w") as report:
-            h1 = f"RaidAlyzer v{self.VERSION} Report"
+            h1 = f"RaidAlyzer v{RaidAlyzerApp.VERSION} Report"
             report.write("<!DOCTYPE html>\n")
             report.write("<html lang=\"en\">\n")
             report.write("<head>\n")
